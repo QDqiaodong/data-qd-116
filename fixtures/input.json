@@ -1,0 +1,133 @@
+{
+  "baseline": {
+    "lsn": 10,
+    "customers": [
+      {
+        "key": "C1",
+        "value": {
+          "name": "East"
+        }
+      }
+    ],
+    "orders": [
+      {
+        "key": "O1",
+        "value": {
+          "customer_id": "C1",
+          "amount_cents": 1000
+        }
+      }
+    ]
+  },
+  "transactions": [
+    {
+      "id": "T2",
+      "commit_lsn": 12,
+      "operations": [
+        {
+          "table": "orders",
+          "key": "O1",
+          "before": {
+            "customer_id": "C1",
+            "amount_cents": 1200
+          },
+          "after": null
+        },
+        {
+          "table": "customers",
+          "key": "C1",
+          "before": {
+            "name": "East"
+          },
+          "after": null
+        }
+      ]
+    },
+    {
+      "id": "T1",
+      "commit_lsn": 11,
+      "operations": [
+        {
+          "table": "orders",
+          "key": "O1",
+          "before": {
+            "customer_id": "C1",
+            "amount_cents": 1000
+          },
+          "after": {
+            "customer_id": "C1",
+            "amount_cents": 1200
+          }
+        },
+        {
+          "table": "orders",
+          "key": "O2",
+          "before": null,
+          "after": {
+            "customer_id": "C2",
+            "amount_cents": 500
+          }
+        },
+        {
+          "table": "customers",
+          "key": "C2",
+          "before": null,
+          "after": {
+            "name": "West"
+          }
+        }
+      ]
+    },
+    {
+      "id": "T1",
+      "commit_lsn": 11,
+      "operations": [
+        {
+          "table": "orders",
+          "key": "O1",
+          "before": {
+            "customer_id": "C1",
+            "amount_cents": 1000
+          },
+          "after": {
+            "customer_id": "C1",
+            "amount_cents": 1200
+          }
+        },
+        {
+          "table": "orders",
+          "key": "O2",
+          "before": null,
+          "after": {
+            "customer_id": "C2",
+            "amount_cents": 500
+          }
+        },
+        {
+          "table": "customers",
+          "key": "C2",
+          "before": null,
+          "after": {
+            "name": "West"
+          }
+        }
+      ]
+    },
+    {
+      "id": "T3",
+      "commit_lsn": 15,
+      "operations": [
+        {
+          "table": "orders",
+          "key": "O3",
+          "before": null,
+          "after": {
+            "customer_id": "C2",
+            "amount_cents": 700
+          }
+        }
+      ]
+    }
+  ],
+  "through_lsn": 12
+}

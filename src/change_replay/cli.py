@@ -4,18 +4,19 @@ from pathlib import Path
 from .common import read, save
 from .model import analyze
 
-def run(source):
+def run(source,history=False):
     data,digest=read(source)
-    return {'schema_version':1,'source_sha256':digest,'result':analyze(data)}
+    return {'schema_version':1,'source_sha256':digest,'result':analyze(data,history=history)}
 
 def main():
     parser=argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument('--source',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--history',action='store_true',help='append SCD2 version history to the result')
     args=parser.parse_args()
     try:
         if args.source.resolve()==args.output.resolve():raise ValueError('input and output must differ')
-        report=run(args.source);save(args.output,report)
+        report=run(args.source,history=args.history);save(args.output,report)
     except (ValueError,TypeError,KeyError,OSError,OverflowError,RecursionError) as error:
         print(str(error),file=sys.stderr);return 2
     print(json.dumps(report,sort_keys=True,ensure_ascii=False,allow_nan=False));return 0

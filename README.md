@@ -34,3 +34,20 @@ transaction.py处理有序镜像与提交时外键，model.py处理日志身份�
 history.py从相邻提交态差异推导SCD2版本；`--history`在result追加history数组，
 样例历史为C1[10,12)、C2[11,null)、O1[10,11)/[11,12)、O2[11,null)，未启用时输出不变。
 当前无外部CDC采集或持久增量恢复。
+
+## 持久接收链路
+
+store.py 用标准库sqlite3把基线、已应用身份、待处理日志、两表和进度放进一个库文件；
+CLI新增三个子命令，原`--source/--output/--history`不变：
+
+```sh
+.venv/bin/change-replay init --baseline fixtures/input.json --db run/state.db
+.venv/bin/change-replay ingest --db run/state.db --batch fixtures/batch.json --output run/ingest.json
+.venv/bin/change-replay export --db run/state.db --output run/export.json
+```
+
+`fixtures/batch.json` 为 `{transactions,watermark}`，样例watermark为12、保留重复T1和未来T3：
+ingest应用T1/T2、T3持久待处理；export显示watermark=12、last_applied_lsn=12和待处理清单。
+水位单调不减且是接收前沿而非应用进度，空洞永久；跨批重传按完整内容幂等，冲突或迟到未知事务
+整批拒绝。每批日志、两表与进度在一个SQLite事务提交，跨进程故障注入在提交前后杀进程只能看到
+完整旧版或新版。详见[数据契约](docs/contract.md)。

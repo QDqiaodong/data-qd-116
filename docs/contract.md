@@ -87,6 +87,41 @@ before不符）时库仍停在v1，旧表、旧索引、journal与进度原样�
 不包含：并发写入者协调、网络接收服务、跨库事务、日志压缩/checkpoint裁剪与历史（SCD2）的
 持久化；`--history`仍只适用于旧离线路径。
 
+### 离线副本核验 `audit`
+
+`audit --db <库文件> --reference <NDJSON 快照> --output <报告>` 在离线副本核对数据库与外部
+快照，**只读**：数据库以`mode=ro` URI 打开并加`query_only`，不迁移、不 checkpoint、不改写
+源库；v1/v2 均可读，v1按旧JSON列读出。
+
+参考快照为无界面的行式 NDJSON（可超过8MB、十万行），行序任意：第一行恰为`{"watermark":N}`，
+此后每行为`{"table","key","value"}`，两表的 key/value 约束与仓库其余路径相同（标识、金额上限、
+值字段恰为name或customer_id/amount_cents）。全文件流式校验：空文件、首行非水位、坏行/坏末行
+（含非UTF-8、重复JSON字段、超过1MB的单行）、重复键（按表）、未知表、非法值和孤儿订单均拒绝，
+错误带行号。
+参考行按`(table,key)`规范化为临时SQLite文件，**不把整个文件装进内存**；成功或失败都删除临时
+文件。水位必须等于库的`watermark`，否则拒绝核验。
+
+数据库在单个`BEGIN`（deferred read transaction）内先读`progress`再按主键序流式扫描两表；
+库表与进度来自同一读快照，因此WAL 下与`ingest`交错提交时报告不会混合两个版本。比较为按键
+归并连接，逐行流式，报告只保留每类前20条：
+
+```json
+{"schema_version":1,"source_sha256":"...","progress":{"schema_version":2,"baseline_lsn":10,
+ "watermark":12,"last_applied_lsn":12},"reference_watermark":12,"sample_limit":20,
+ "tables":{"customers":{"db_only":{"count":0,"samples":[]},
+                        "reference_only":{"count":0,"samples":[]},
+                        "value_differs":{"count":0,"samples":[]}},
+           "orders":{...}}}
+```
+
+`source_sha256`是参考文件原始字节的SHA256。每类的`count`是精确总数，`samples`按key排序取前20
+条，每项含`key`、`db`（仅库有的一方为null）与`reference`（仅快照有的一方为null）的双方值。
+表存在差异是正常结果，退出0；坏快照、水位不等、库不存在/非本工具库或发布失败退出2并保留旧
+报告。全文件验证并比较成功后报告才原子发布，失败清理临时库文件。仅用标准库。
+
+不包含：修复数据、合并差异、写回库或快照、跨库比较、参考快照的压缩/分片传输。旧
+`--source/--output/--history`与`init/ingest/export`行为不变。
+
 ### 规模与测量
 
 同一合法小批（新增客户、跨客户转单、同键两次修改、一笔未来事务）分别作用于1,000行和

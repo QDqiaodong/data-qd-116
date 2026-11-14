@@ -44,6 +44,7 @@ CLI新增三个子命令，原`--source/--output/--history`不变：
 .venv/bin/change-replay init --baseline fixtures/input.json --db run/state.db
 .venv/bin/change-replay ingest --db run/state.db --batch fixtures/batch.json --output run/ingest.json
 .venv/bin/change-replay export --db run/state.db --output run/export.json
+.venv/bin/change-replay audit --db run/state.db --reference run/snapshot.ndjson --output run/audit.json
 ```
 
 `fixtures/batch.json` 为 `{transactions,watermark}`，样例watermark为12、保留重复T1和未来T3：
@@ -68,3 +69,14 @@ PYTHONPATH=src python3 tools/bench_ingest.py --rows 100000 --sql-trace
 两者ingest的tracemalloc峰值均约0.02 MiB（阈值8 MiB），SQL跟踪无未按键限定的表访问、无全表
 DELETE。`export`是全量快照路径，峰值随库增长，不作为批处理指标。对应断言在
 `tests/test_store_v2.py`。
+
+## 离线副本核验
+
+`audit --db ... --reference ... --output ...`只读对比库与外部无序NDJSON快照（首行
+`{"watermark":N}`，其后每行`{"table","key","value"}`），不修复数据。重复键、重复JSON字段、
+坏行与孤儿订单整份拒绝；水位须与库一致。库表与进度取自同一读事务，WAL下与ingest交错提交
+不混合版本，v1/v2都可读且不迁移源库。报告按表给出仅库有/仅快照有/值不同的精确数量及按键
+排序前20条双方值，并记录快照字节SHA256与库进度；差异本身不是错误。快照流式进入临时库，
+支持超过8MB、十万行；实测十万行相对千行峰值增量远低于8MiB（约0.0x MiB）。全文件通过后
+才原子发布，失败保留旧报告并清理临时文件。详见[数据契约](docs/contract.md)，测试见
+`tests/test_audit.py`。

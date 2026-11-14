@@ -3,7 +3,7 @@ import argparse, json, sqlite3, sys
 from pathlib import Path
 from .common import read, save
 from .model import analyze
-from . import store
+from . import audit, store
 
 def run(source,history=False):
     data,digest=read(source)
@@ -30,7 +30,11 @@ def _store_parser():
     export=commands.add_parser('export',help='export tables, totals, progress and pending log')
     export.add_argument('--db',type=Path,required=True)
     export_out=export.add_argument('--output',type=Path)
-    for action in (init_out,ingest_out,export_out):action.help='write the JSON summary to this path'
+    audit=commands.add_parser('audit',help='read-only compare a database against an NDJSON reference')
+    audit.add_argument('--db',type=Path,required=True)
+    audit.add_argument('--reference',type=Path,required=True)
+    audit_out=audit.add_argument('--output',type=Path,required=True)
+    for action in (init_out,ingest_out,export_out,audit_out):action.help='write the JSON summary to this path'
     return parser
 
 def _emit(report,output):
@@ -51,13 +55,17 @@ def _store(args):
             if args.output.resolve()==args.batch.resolve():raise ValueError('batch and output must differ')
         batch,_=read(args.batch)
         return _emit(store.ingest(args.db,batch),args.output)
+    if args.command=='audit':
+        if args.output.resolve()==args.db.resolve():raise ValueError('database and output must differ')
+        if args.output.resolve()==args.reference.resolve():raise ValueError('reference and output must differ')
+        return _emit(audit.run(args.db,args.reference),args.output)
     if args.output is not None and args.output.resolve()==args.db.resolve():
         raise ValueError('database and output must differ')
     return _emit(store.export(args.db),args.output)
 
 def main(argv=None):
     argv=sys.argv[1:] if argv is None else list(argv)
-    commands=('init','ingest','export')
+    commands=('init','ingest','export','audit')
     try:
         if argv[:1] and argv[0] in commands:
             args=_store_parser().parse_args(argv)

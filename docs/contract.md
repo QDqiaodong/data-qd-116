@@ -29,18 +29,19 @@ O1[10,11)/[11,12)、O2[11,null)。失败仍退出2并保留旧报告。
 不包含日志采集、真实WAL解析、增量checkpoint恢复、schema演进、并发复制或事务隔离模拟。
 这些能力不通过题面预置；后续可按真实需求演进。源快照与输出运行文件分离。
 
-## 持久接收链路 v1（SQLite）
+## 持久接收链路 v2（SQLite）
 
 在离线重放之外提供持久接收。状态全部在一个SQLite库文件中，业务运行只用标准库sqlite3；
 旧`--source/--output/--history`路径的行为、输出和退出码不变，持久链路是独立子命令。
 
 - `init --baseline <现有基线或input.json> --db <库文件>`：只读输入里的`baseline`（若给的是
-  旧input文档，忽略其transactions/through_lsn），建表并写入两表、baseline_lsn，初始
+  旧input文档，忽略其transactions/through_lsn），建v2表并写入两表、baseline_lsn，初始
   `watermark=last_applied_lsn=baseline.lsn`。库文件已存在或为符号链接则拒绝，失败不留库。
 - `ingest --db ... --batch <{transactions,watermark}>`：批次字段恰为transactions与watermark，
   事务结构沿用上面的契约（id/commit_lsn/operations，形状、before/after镜像、金额与标识约束）。
 - `export --db ... [--output ...]`：输出两表、`customer_order_cents`、`watermark`、
-  `last_applied_lsn`、`pending_transactions`（id/commit_lsn/操作数）和schema_version。
+  `last_applied_lsn`、`pending_transactions`（id/commit_lsn/操作数）和schema_version；
+  可读schema_version 1与2，v1库按原JSON行读出，不要求先迁移。
 
 水位语义：`watermark`单调不减，是接收前沿，表示此后不会再有`commit_lsn<=watermark`的事务
 首次到达；LSN空洞因此永久存在。它不是已应用进度，`last_applied_lsn`可以小于水位。
@@ -49,17 +50,49 @@ O1[10,11)/[11,12)、O2[11,null)。失败仍退出2并保留旧报告。
 重传同样幂等。同ID不同LSN、同LSN不同内容或同ID不同内容一律按身份冲突拒绝；`commit_lsn`
 不高于旧水位的未知事务同样拒绝（不再首次到达），此类拒绝不区分位于批内何处。
 
-应用：新水位内所有未应用的持久事务按commit_lsn顺序，以私有副本执行完整操作、事务末核外键；
-before镜像不符或提交态外键错误则整批不生效。高于新水位的已收事务只验形状，持久暂存为待处理；
-later批次水位越过其LSN时转为可应用，同样受完整校验。已应用事务的ID/内容留在库中，重启直接
-复用，不重放已应用事务，也不重读旧源文件。
+应用：新水位内所有未应用的持久事务按commit_lsn顺序（同LSN按id）逐笔消费，以私有工作集执行
+完整操作、事务末核外键；before镜像不符或提交态外键错误则整批不生效。高于新水位的已收事务
+只验形状，持久暂存为待处理；later批次水位越过其LSN时转为可应用，同样受完整校验。已应用事务的
+ID/内容留在库中，重启直接复用，不重放已应用事务，也不重读旧源文件。
 
-原子性：每批把身份日志（journal）、两表的物化结果、`watermark`与`last_applied_lsn`放进同一
+按键工作集：每笔事务只从库中按主键读取它实际触及(customers.key/orders.key)的行，工作集仅保存
+这些键；未触及的行不载入内存，也不参与全表校验。操作顺序保留，before为精确前镜像；事务内
+允许先写订单后补客户，外键在事务末按工作集最终态检查（客户在本事务内被删除后又被重建等
+中间态不暴露）。删除客户时，若存在未被本事务触及、仍以`customer_id`引用该客户的订单，事务
+失败并整批回滚；本事务内一并删除或改挂的订单不阻删。`orders`按`(customer_id,key)`建持久
+索引，引用检查按键分页走该索引，不扫描全表。相反方向的孤儿订单（工作集内订单引用了不存在的
+客户）同样在事务末拒绝。
+
+写回只针对工作集：存在的客户与订单按主键UPSERT，删除按主键DELETE，不再`DELETE`全表后重写；
+被应用事务的journal行逐条`UPDATE ... applied=1`。普通批次的SQL只触及：progress全表（常数行）、
+按id/commit_lsn点查identity、`applied=0`的待应用日志前缀（`journal_pending(applied,commit_lsn,id)`
+覆盖索引、keyset分页，已应用日志不扫描）以及按键的行读写。`export`本就是全量快照，允许全表读。
+
+原子性：每批把身份日志（journal）、被触及的物化行、`watermark`与`last_applied_lsn`放进同一
 SQLite事务（`BEGIN IMMEDIATE`……`COMMIT`，`synchronous=FULL`）。提交前被杀只留旧版本且重试
 可按新批应用；提交后被杀只留新版本，重试全为重复。测试用独立子进程在提交前后`os._exit`证明。
 前置的JSON输入校验失败与任何应用错误均整批回滚，不留下半批日志，退出码2，已有库文件与旧输出
 保持原样。
 
+### v1 → v2 原地迁移
+
+v1把两表存为`(key, value)` JSON文本且无订单引用索引；v2改为类型化列并新增
+`orders_customer(customer_id,key)`与更宽的`journal_pending`。`init`只建v2。`export`两种版本
+都可读。v1库的**首次`ingest`**在`BEGIN IMMEDIATE`内原地迁移：重命名旧表、建v2表与索引、
+按512行分块流式搬迁两表、重建索引并写`schema_version=2`；随后同批日志应用、新表物化、
+watermark/last_applied与迁移本身在同一个事务中一起提交或回滚。迁移失败（如某笔待应用事务
+before不符）时库仍停在v1，旧表、旧索引、journal与进度原样保留，重试可再迁移。提交点前后
+被杀同样只暴露完整v1或完整v2+本批。迁移后旧JSON列不再存在；导出字段保持不变。
+
 不包含：并发写入者协调、网络接收服务、跨库事务、日志压缩/checkpoint裁剪与历史（SCD2）的
 持久化；`--history`仍只适用于旧离线路径。
+
+### 规模与测量
+
+同一合法小批（新增客户、跨客户转单、同键两次修改、一笔未来事务）分别作用于1,000行和
+100,000行（客户与订单各N行）的库，`tracemalloc`在`ingest`调用的峰值增量均为约0.02 MiB，
+要求不超过8 MiB且不随库增大；库文件字节在批前后不变（除journal新增行）。`export`是全量
+路径，峰值随库增长（100k行约69 MiB），不作为普通批次指标。`tools/bench_ingest.py`记录造数
+与测量命令；`tests/test_store_v2.py`用同样的批与阈值断言，并用`sqlite3` trace回调证明普通
+批次没有未按键限定的表访问、没有全表DELETE、引用检查走`orders_customer`索引。
 

@@ -49,5 +49,22 @@ CLI新增三个子命令，原`--source/--output/--history`不变：
 `fixtures/batch.json` 为 `{transactions,watermark}`，样例watermark为12、保留重复T1和未来T3：
 ingest应用T1/T2、T3持久待处理；export显示watermark=12、last_applied_lsn=12和待处理清单。
 水位单调不减且是接收前沿而非应用进度，空洞永久；跨批重传按完整内容幂等，冲突或迟到未知事务
-整批拒绝。每批日志、两表与进度在一个SQLite事务提交，跨进程故障注入在提交前后杀进程只能看到
-完整旧版或新版。详见[数据契约](docs/contract.md)。
+整批拒绝。每批日志、被触及物化行与进度在一个SQLite事务提交，跨进程故障注入在提交前后杀进程
+只能看到完整旧版或新版。
+
+v2按主键读写：每笔事务只载入它触及的行，逐笔消费待应用日志；操作顺序与前镜像、事务末外键
+不变（允许先写订单后补客户），删除客户时若仍有未触及订单引用则拒绝。`orders`按
+`(customer_id,key)`建索引，引用检查不扫全表；普通批次不扫全部客户、订单或已应用日志，也不再
+删表重写。init只建v2；export可读v1/v2；首次对v1库ingest时在同一事务内原地迁移，迁移与该批
+日志、物化行和进度一起提交或回滚。详见[数据契约](docs/contract.md)。
+
+规模测量（同一合法小批作用于1,000和100,000客户/订单的库）：
+
+```sh
+PYTHONPATH=src python3 tools/bench_ingest.py --rows 1000 --sql-trace
+PYTHONPATH=src python3 tools/bench_ingest.py --rows 100000 --sql-trace
+```
+
+两者ingest的tracemalloc峰值均约0.02 MiB（阈值8 MiB），SQL跟踪无未按键限定的表访问、无全表
+DELETE。`export`是全量快照路径，峰值随库增长，不作为批处理指标。对应断言在
+`tests/test_store_v2.py`。
